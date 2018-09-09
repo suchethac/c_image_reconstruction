@@ -106,3 +106,6 @@ venv.bak/
 
 ### DATA 
 Data/
+
+# Stupid mac finder file
+.DS_Store
