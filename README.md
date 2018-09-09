@@ -1,5 +1,5 @@
-Image Reconstruction for Callibration Data of COMING project
-============================================================
+Image Reconstruction for Calibration Data of the COMING Project
+===============================================================
 
 #### Suchetha Cooray (<cooray@nagoya-u.jp>)
 
