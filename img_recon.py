@@ -10,36 +10,20 @@ from scipy import ndimage
 from astropy.io import fits
 import os, sys
 
-class Image(object):
-    def __init__(self, image, mask=0, reconstructed=False, \
-                freq_cut=0, fits_header=None):
-
-        self.img = image
-
-        if mask == 0:
-            self.mask = Mask(np.zeros(image.shape))
-        elif isinstance(mask, Mask):
-            self.mask = mask
-        elif isinstance(mask,(np.ndarray, np.generic)):
-            self.mask = Mask(mask)
-
-        self.reconstructed = reconstructed
-
-        if freq_cut == 0: freq_cut=image.shape[0]/2
-        self.freq_cut = freq_cut
-
+class Image():
+    def __init__(self, image, fits_header=None):
+        self.data = image
 
     def from_file(filename, nanzero=True):
         cube=fits.open(filename)#data_dir+cube_name)
         img=cube[0].data
         if nanzero == True:
             min_v=np.nanmin(img)
-            for i in range(0,cube_size[0]):
-                for j in range(0,cube_size[1]):
-                    if img[i,j] > min_v:
-                        pass
-                    else:
-                        img[i,j]=0
+            for (i,j),val in np.ndenumerate(img):
+                if img[i,j] > min_v:
+                    pass
+                else:
+                    img[i,j]=0
         return Image(img,fits_header=cube[0].header)
 
     def recon_img(image, window, smoothed_window, f_window):
@@ -68,38 +52,80 @@ class Image(object):
         o_a=est.astype(float)
         return o_a
 
-    def reconstruct(img_obj):
-        if not isinstance(img_obj, image):
-            return print("invalid object type")
+    def f_window(img, freq_cut):
+        shp_x, shp_y = img.shape
+        f_wind = np.ones(shp_x, shp_y)
+        for (y,x), value in np.ndenumerate(f_wind):
+            if (x-shp_x+1)**2+(y-shp_y+1)**2>freq_cut**2:
+                f_wind[y,x]=0
+        return f_wind
 
-        if not((img_obj.Mask.mask).all()):
-            return print("enter mask")
+    def reconstruct(img, msk, freq_cut=None):
+        if not isinstance(img, Image):
+            return print("invalid image object type")
+        if not isinstance(msk, (Mask, MaskObj)):
+            return print("invalid mask object type")
+        if freq_cut is None: freq_cut=img.shape[0]/2
 
-        if img_obj.img.ndim == 2:
-            shp_x, shp_y = img_obj.img.shape
-            f_wind = np.ones(shp_x, shp_y)
+        s_wind = smooth_boundary(msk.window)
+        f_wind = f_window(img.data, freq_cut)
+        reconstructed_img = recon_img(img.data, msk.window, s_wind, f_wind)
 
-            for (y,x), value in np.ndenumerate(f_wind):
-                if (x-shp_x+1)**2+(y-shp_y+1)**2>img_obj.freq_cut**2:
-                    f_wind[y,x]=0
+        return ImageObj(reconstructed_img, msk, reconstructed=True, \
+                    freq_cut=freq_cut, fits_header=img.fits_header)
 
-            reconstructed_img = recon_img(img_obj.img, img_obj.mask.window, \
-                                        img_obj.mask.s_wind, f_wind)
-
-        else: print("Invalid number of dimensions")
-
-        return Image(reconstructed_img, img_obj.mask, reconstructed=True, \
-                    img_obj.freq_cut)
+    # def _reconstruct(img_obj):#Not used
+    #     if not isinstance(img_obj, Image):
+    #         return print("invalid object type")
+    #
+    #     if not((img_obj.Mask.mask).all()):
+    #         return print("enter mask")
+    #
+    #     if img_obj.img.ndim == 2:
+    #         shp_x, shp_y = img_obj.img.shape
+    #         f_wind = np.ones(shp_x, shp_y)
+    #
+    #         for (y,x), value in np.ndenumerate(f_wind):
+    #             if (x-shp_x+1)**2+(y-shp_y+1)**2>img_obj.freq_cut**2:
+    #                 f_wind[y,x]=0
+    #
+    #         reconstructed_img = recon_img(img_obj.img, img_obj.mask.window, \
+    #                                     img_obj.mask.s_wind, f_wind)
+    #
+    #     else: print("Invalid number of dimensions")
+    #
+    #     return ImageObject(reconstructed_img, img_obj.mask, reconstructed=True, \
+    #                 img_obj.freq_cut)
 
     def save_image(img_obj, filename, filedir="", filetype="fits"):
         if filetype == "fits":
-            hdu=fits.PrimaryHDU(img_obj.img[:,:])
+            hdu=fits.PrimaryHDU(img_obj.data[:,:])
             hdu.header=orig_header
             im=fits.HDUList([hdu])
             save_file = filedir + filename + ".fits"
             im.writeto(save_file, clobber=True)
 
-class Mask(object):
+class ImageObj(Image):
+    """
+    Contains the image and the necessary information from reconstruction.
+    """
+    def __init__(self, image, mask, reconstructed=False, \
+                freq_cut=0, fits_header=None):
+
+        super().__init__(image, fits_header=None)
+
+        if isinstance(mask, (Mask, MaskObj)):
+            self.mask = mask
+        elif isinstance(mask,(np.ndarray, np.generic)):
+            self.mask = Mask(mask)
+
+        self.reconstructed = reconstructed
+
+        if freq_cut == 0: freq_cut=image.shape[0]/2
+        self.freq_cut = freq_cut
+
+
+class Mask():
     '''
 
     mask
@@ -112,12 +138,8 @@ class Mask(object):
 
     '''
 
-    def __init__(self, wind_arr, error_arr=0, nan_arr=0):
-
+    def __init__(self, wind_arr):
         self.window = wind_arr
-        self.s_wind = smooth_boundary(wind_arr)
-        self.error = error_arr #0 for error line
-        self.nan = nan_arr #0 for nan
 
     def find_mask(window):
         mask = np.ones(window.shape)
@@ -140,6 +162,31 @@ class Mask(object):
             i+=1
         return o_a
 
+    def error_def_line(img, hline=None, vline=None):
+        img_shp = img.shape
+        error_array = np.ones(img_shp)
+
+        if hline is not None:
+            if isinstance(hline, int):
+                hline_min = hline - 1
+                error_array[hline_min:hline][:]=0
+            elif isinstance(hline, list):
+                hline_min = hline - 1
+                for a,b in zip(hline_min, hline):
+                    error_array[hline_min:hline][:]=0
+
+        if vline is not None:
+            if isinstance(vline, int):
+                vline_min = vline - 1
+                error_array[:][vline_min:vline]=0
+            elif isinstance(vline, list):
+                vline_min = vline - 1
+                for a,b in zip(vline_min, vline):
+                    error_array[:][vline_min:vline]=0
+
+        return error_array
+
+
     def error_line(mask_obj, err_line, elwidth = 1):
         mask_obj.error=np.ones(mask_obj.window.shape)
         err_line_min = err_line - elwidth
@@ -147,7 +194,12 @@ class Mask(object):
         mask_obj.window[err_line_min:err_line][:]=0
 
         self.s_wind = smooth_boundary(mask_obj.window)
-        return pass
+
+class MaskObj(Mask):
+    def __init__(self, wind_arr, error_arr=None, nan_arr=None):
+        super().__init__(wind_arr)
+        self.error = error_arr #0 for error line
+        self.nan = nan_arr
 
     def nan_arr_from_image(filename, nanzero=True):
         cube=fits.open(filename)#data_dir+cube_name)
@@ -155,10 +207,9 @@ class Mask(object):
         nan_arr = np.ones(img.shape)
         if nanzero == True:
             min_v=np.nanmin(img)
-            for i in range(0,cube_size[0]):
-                for j in range(0,cube_size[1]):
-                    if img[i,j] > min_v:
-                        pass
-                    else:
-                        nan_arr[i,j]=0
+            for (i,j),val in np.ndenumerate(img):
+                if img[i,j] > min_v:
+                    pass
+                else:
+                    nan_arr[i,j]=0
         return nan_arr
